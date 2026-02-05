@@ -34,18 +34,12 @@ def extract_header_fields(text):
 # ---------------- LINE ITEM EXTRACTION ----------------
 def extract_line_items_from_text(text):
     rows = []
-
     lines = [l for l in text.split("\n") if l.strip()]
 
     start_idx = None
 
-    # Detect header row
     for i, line in enumerate(lines):
-        if (
-            "TASK" in line.upper()
-            and "QTY" in line.upper()
-            and "RATE" in line.upper()
-        ):
+        if "TASK" in line.upper() and "QTY" in line.upper() and "RATE" in line.upper():
             start_idx = i + 1
             break
 
@@ -53,7 +47,6 @@ def extract_line_items_from_text(text):
         return rows
 
     for line in lines[start_idx:]:
-        # Stop when totals section starts
         if "TOTAL" in line.upper() or "BALANCE" in line.upper():
             break
 
@@ -77,16 +70,47 @@ def extract_line_items_from_text(text):
 
 # ---------------- MAIN PROCESS ----------------
 if uploaded_files:
+
     final_data = []
 
     for file in uploaded_files:
-        try:
-            full_text = ""
 
-            with pdfplumber.open(file) as pdf:
-                for page in pdf.pages:
-                    if page.extract_text():
-                        full_text += page.extract_text() + "\n"
+        full_text = ""
 
-            header = extract_header_fields(full_text)
-            line_items = extract_line_items_from_te_
+        with pdfplumber.open(file) as pdf:
+            for page in pdf.pages:
+                if page.extract_text():
+                    full_text += page.extract_text() + "\n"
+
+        header = extract_header_fields(full_text)
+        line_items = extract_line_items_from_text(full_text)
+
+        if not line_items:
+            st.warning(f"No line items found in {file.name}")
+            continue
+
+        for item in line_items:
+            final_data.append({
+                **item,
+                **header,
+                "SOURCE FILE": file.name,
+                "UPLOADED AT": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+    if final_data:
+        df = pd.DataFrame(final_data)
+
+        st.subheader("📊 Extracted Invoice Line Items")
+        st.dataframe(df, use_container_width=True)
+
+        buffer = io.BytesIO()
+        df.to_excel(buffer, index=False)
+
+        st.download_button(
+            "📥 Download Excel",
+            buffer.getvalue(),
+            file_name="invoice_structured_output.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.warning("No invoice data extracted.")
