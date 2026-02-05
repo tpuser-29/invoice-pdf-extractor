@@ -2,65 +2,102 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 import io
+import re
 from datetime import datetime
 
-st.set_page_config(page_title="Invoice PDF Extractor", layout="wide")
-st.title("📄 Invoice PDF → Tabular Excel (Merged)")
+st.set_page_config(page_title="Invoice Extractor", layout="wide")
+st.title("📄 Invoice PDF → Structured Excel")
 
 uploaded_files = st.file_uploader(
-    "Upload or drag & drop invoice PDF files",
+    "Upload invoice PDF files",
     type="pdf",
     accept_multiple_files=True
 )
 
-def extract_invoice_tables(uploaded_file):
-    all_rows = []
+# -------- HEADER EXTRACTION --------
+def extract_header_fields(text):
+    def find(pattern):
+        match = re.search(pattern, text, re.IGNORECASE)
+        return match.group(1).strip() if match else ""
 
-    with pdfplumber.open(uploaded_file) as pdf:
+    return {
+        "INVOICE NO": find(r"Invoice\s*No\.?\s*[:\-]?\s*(\S+)"),
+        "INVOICE DATE": find(r"Invoice\s*Date\s*[:\-]?\s*([0-9\/\-]+)"),
+        "DUE DATE": find(r"Due\s*Date\s*[:\-]?\s*([0-9\/\-]+)"),
+        "BALANCE DUE": find(r"Balance\s*Due\s*[:\-]?\s*([\$0-9,\.]+)"),
+        "CUSTOMER NAME": find(r"^(.*?)\n", text)  # top-left first line
+    }
+
+# -------- LINE ITEM EXTRACTION --------
+REQUIRED_COLUMNS = [
+    "TASK", "EMPLOYEE", "SERVICE", "DATE",
+    "QTY", "UNIT", "RATE", "SUBTOTAL"
+]
+
+def extract_line_items(pdf_file):
+    rows = []
+
+    with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             tables = page.extract_tables()
 
             for table in tables:
-                # First row usually header
-                headers = table[0]
-                data_rows = table[1:]
+                headers = [h.strip().upper() if h else "" for h in table[0]]
 
-                for row in data_rows:
-                    if any(row):  # skip empty rows
-                        row_dict = dict(zip(headers, row))
-                        all_rows.append(row_dict)
+                if not set(REQUIRED_COLUMNS).issubset(set(headers)):
+                    continue  # skip unrelated tables
 
-    return all_rows
+                col_index = {h: headers.index(h) for h in REQUIRED_COLUMNS}
 
+                for row in table[1:]:
+                    if not any(row):
+                        continue
+
+                    item = {col: row[col_index[col]] for col in REQUIRED_COLUMNS}
+                    rows.append(item)
+
+    return rows
+
+# -------- MAIN PROCESS --------
 if uploaded_files:
-    combined_data = []
+    final_rows = []
 
     for file in uploaded_files:
         try:
-            table_rows = extract_invoice_tables(file)
+            full_text = ""
+            with pdfplumber.open(file) as pdf:
+                for page in pdf.pages:
+                    if page.extract_text():
+                        full_text += page.extract_text() + "\n"
 
-            for row in table_rows:
-                row["Source_File_Name"] = file.name
-                row["Upload_Time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                combined_data.append(row)
+            header_data = extract_header_fields(full_text)
+            line_items = extract_line_items(file)
+
+            for item in line_items:
+                final_rows.append({
+                    **item,
+                    **header_data,
+                    "SOURCE FILE": file.name,
+                    "UPLOADED AT": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
 
         except Exception as e:
-            st.error(f"Failed to process {file.name}: {e}")
+            st.error(f"Error processing {file.name}: {e}")
 
-    if combined_data:
-        df = pd.DataFrame(combined_data)
+    if final_rows:
+        df = pd.DataFrame(final_rows)
 
-        st.subheader("📊 Merged Invoice Line Items")
+        st.subheader("📊 Extracted Invoice Data")
         st.dataframe(df, use_container_width=True)
 
         buffer = io.BytesIO()
         df.to_excel(buffer, index=False)
 
         st.download_button(
-            label="📥 Download Excel (Merged)",
-            data=buffer.getvalue(),
-            file_name="merged_invoice_data.xlsx",
+            "📥 Download Excel",
+            buffer.getvalue(),
+            file_name="invoice_tabular_output.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.warning("No tabular data found in uploaded PDFs.")
+        st.warning("No matching invoice tables found.")
