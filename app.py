@@ -5,7 +5,7 @@ import io
 import re
 from datetime import datetime
 
-st.set_page_config(page_title="Invoice Extractor", layout="wide")
+st.set_page_config(page_title="Invoice PDF → Structured Excel", layout="wide")
 st.title("📄 Invoice PDF → Structured Excel")
 
 uploaded_files = st.file_uploader(
@@ -14,100 +14,79 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-# -------- HEADER EXTRACTION --------
+# ---------------- HEADER EXTRACTION ----------------
 def extract_header_fields(text):
 
-    def find(pattern, text_block):
-        match = re.search(pattern, text_block, re.IGNORECASE)
+    def find(pattern):
+        match = re.search(pattern, text, re.IGNORECASE)
         return match.group(1).strip() if match else ""
 
-    return {
-        "INVOICE NO": find(r"Invoice\s*No\.?\s*[:\-]?\s*(\S+)", text),
-        "INVOICE DATE": find(r"Invoice\s*Date\s*[:\-]?\s*([0-9\/\-]+)", text),
-        "DUE DATE": find(r"Due\s*Date\s*[:\-]?\s*([0-9\/\-]+)", text),
-        "BALANCE DUE": find(r"Balance\s*Due\s*[:\-]?\s*([\$0-9,\.]+)", text),
-        "CUSTOMER NAME": text.split("\n")[0].strip() if text else ""
-    }
-
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
 
     return {
         "INVOICE NO": find(r"Invoice\s*No\.?\s*[:\-]?\s*(\S+)"),
         "INVOICE DATE": find(r"Invoice\s*Date\s*[:\-]?\s*([0-9\/\-]+)"),
         "DUE DATE": find(r"Due\s*Date\s*[:\-]?\s*([0-9\/\-]+)"),
         "BALANCE DUE": find(r"Balance\s*Due\s*[:\-]?\s*([\$0-9,\.]+)"),
-        "CUSTOMER NAME": find(r"^(.*?)\n", text)  # top-left first line
+        "CUSTOMER NAME": lines[0] if lines else ""
     }
 
-# -------- LINE ITEM EXTRACTION --------
-REQUIRED_COLUMNS = [
-    "TASK", "EMPLOYEE", "SERVICE", "DATE",
-    "QTY", "UNIT", "RATE", "SUBTOTAL"
-]
-
-def extract_line_items(pdf_file):
+# ---------------- LINE ITEM EXTRACTION ----------------
+def extract_line_items_from_text(text):
     rows = []
 
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            tables = page.extract_tables()
+    lines = [l for l in text.split("\n") if l.strip()]
 
-            for table in tables:
-                headers = [h.strip().upper() if h else "" for h in table[0]]
+    start_idx = None
 
-                if not set(REQUIRED_COLUMNS).issubset(set(headers)):
-                    continue  # skip unrelated tables
+    # Detect header row
+    for i, line in enumerate(lines):
+        if (
+            "TASK" in line.upper()
+            and "QTY" in line.upper()
+            and "RATE" in line.upper()
+        ):
+            start_idx = i + 1
+            break
 
-                col_index = {h: headers.index(h) for h in REQUIRED_COLUMNS}
+    if start_idx is None:
+        return rows
 
-                for row in table[1:]:
-                    if not any(row):
-                        continue
+    for line in lines[start_idx:]:
+        # Stop when totals section starts
+        if "TOTAL" in line.upper() or "BALANCE" in line.upper():
+            break
 
-                    item = {col: row[col_index[col]] for col in REQUIRED_COLUMNS}
-                    rows.append(item)
+        parts = re.split(r"\s{2,}", line.strip())
+
+        if len(parts) < 8:
+            continue
+
+        rows.append({
+            "TASK": parts[0],
+            "EMPLOYEE": parts[1],
+            "SERVICE": parts[2],
+            "DATE": parts[3],
+            "QTY": parts[4],
+            "UNIT": parts[5],
+            "RATE": parts[6],
+            "SUBTOTAL": parts[7],
+        })
 
     return rows
 
-# -------- MAIN PROCESS --------
+# ---------------- MAIN PROCESS ----------------
 if uploaded_files:
-    final_rows = []
+    final_data = []
 
     for file in uploaded_files:
         try:
             full_text = ""
+
             with pdfplumber.open(file) as pdf:
                 for page in pdf.pages:
                     if page.extract_text():
                         full_text += page.extract_text() + "\n"
 
-            header_data = extract_header_fields(full_text)
-            line_items = extract_line_items(file)
-
-            for item in line_items:
-                final_rows.append({
-                    **item,
-                    **header_data,
-                    "SOURCE FILE": file.name,
-                    "UPLOADED AT": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
-
-        except Exception as e:
-            st.error(f"Error processing {file.name}: {e}")
-
-    if final_rows:
-        df = pd.DataFrame(final_rows)
-
-        st.subheader("📊 Extracted Invoice Data")
-        st.dataframe(df, use_container_width=True)
-
-        buffer = io.BytesIO()
-        df.to_excel(buffer, index=False)
-
-        st.download_button(
-            "📥 Download Excel",
-            buffer.getvalue(),
-            file_name="invoice_tabular_output.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        st.warning("No matching invoice tables found.")
+            header = extract_header_fields(full_text)
+            line_items = extract_line_items_from_te_
