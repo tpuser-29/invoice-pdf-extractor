@@ -41,4 +41,26 @@ if uploaded_files:
 
             for row in table_rows:
                 row["Source_File_Name"] = file.name
-                row["Upload_Time"] = datetime.now().strftime("%Y-%m-%d_]()
+                row["Upload_Time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                combined_data.append(row)
+
+        except Exception as e:
+            st.error(f"Failed to process {file.name}: {e}")
+
+    if combined_data:
+        df = pd.DataFrame(combined_data)
+
+        st.subheader("📊 Merged Invoice Line Items")
+        st.dataframe(df, use_container_width=True)
+
+        buffer = io.BytesIO()
+        df.to_excel(buffer, index=False)
+
+        st.download_button(
+            label="📥 Download Excel (Merged)",
+            data=buffer.getvalue(),
+            file_name="merged_invoice_data.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.warning("No tabular data found in uploaded PDFs.")
