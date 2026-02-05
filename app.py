@@ -1,47 +1,66 @@
 import streamlit as st
 import pandas as pd
 import pdfplumber
-from datetime import datetime
 import io
+from datetime import datetime
 
-st.set_page_config(page_title="Invoice Extractor", layout="wide")
-
-st.title("📄 Invoice PDF → Excel Converter")
+st.set_page_config(page_title="Invoice PDF Extractor", layout="wide")
+st.title("📄 Invoice PDF → Tabular Excel (Merged)")
 
 uploaded_files = st.file_uploader(
-    "Drag & drop invoice PDFs",
+    "Upload or drag & drop invoice PDF files",
     type="pdf",
     accept_multiple_files=True
 )
 
-def extract_text(pdf_file):
-    text = ""
-    with pdfplumber.open(pdf_file) as pdf:
+def extract_invoice_tables(uploaded_file):
+    all_rows = []
+
+    with pdfplumber.open(uploaded_file) as pdf:
         for page in pdf.pages:
-            if page.extract_text():
-                text += page.extract_text() + "\n"
-    return text
+            tables = page.extract_tables()
+
+            for table in tables:
+                # First row usually header
+                headers = table[0]
+                data_rows = table[1:]
+
+                for row in data_rows:
+                    if any(row):  # skip empty rows
+                        row_dict = dict(zip(headers, row))
+                        all_rows.append(row_dict)
+
+    return all_rows
 
 if uploaded_files:
-    data = []
+    combined_data = []
 
     for file in uploaded_files:
-        text = extract_text(file)
+        try:
+            table_rows = extract_invoice_tables(file)
 
-        data.append({
-            "Filename": file.name,
-            "Extracted Text": text[:500],  # preview
-            "Uploaded At": datetime.now()
-        })
+            for row in table_rows:
+                row["Source_File_Name"] = file.name
+                row["Upload_Time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                combined_data.append(row)
 
-    df = pd.DataFrame(data)
-    st.dataframe(df, use_container_width=True)
+        except Exception as e:
+            st.error(f"Failed to process {file.name}: {e}")
 
-    excel_buffer = io.BytesIO()
-    df.to_excel(excel_buffer, index=False)
-    st.download_button(
-        "📥 Download Excel",
-        excel_buffer.getvalue(),
-        file_name="invoice_data.xlsx"
-    )
+    if combined_data:
+        df = pd.DataFrame(combined_data)
 
+        st.subheader("📊 Merged Invoice Line Items")
+        st.dataframe(df, use_container_width=True)
+
+        buffer = io.BytesIO()
+        df.to_excel(buffer, index=False)
+
+        st.download_button(
+            label="📥 Download Excel (Merged)",
+            data=buffer.getvalue(),
+            file_name="merged_invoice_data.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    else:
+        st.warning("No tabular data found in uploaded PDFs.")
