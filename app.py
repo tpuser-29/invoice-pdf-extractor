@@ -16,9 +16,19 @@ uploaded_files = st.file_uploader(
 
 # -------- HEADER EXTRACTION --------
 def extract_header_fields(text):
-    def find(pattern):
-        match = re.search(pattern, text, re.IGNORECASE)
+
+    def find(pattern, text_block):
+        match = re.search(pattern, text_block, re.IGNORECASE)
         return match.group(1).strip() if match else ""
+
+    return {
+        "INVOICE NO": find(r"Invoice\s*No\.?\s*[:\-]?\s*(\S+)", text),
+        "INVOICE DATE": find(r"Invoice\s*Date\s*[:\-]?\s*([0-9\/\-]+)", text),
+        "DUE DATE": find(r"Due\s*Date\s*[:\-]?\s*([0-9\/\-]+)", text),
+        "BALANCE DUE": find(r"Balance\s*Due\s*[:\-]?\s*([\$0-9,\.]+)", text),
+        "CUSTOMER NAME": text.split("\n")[0].strip() if text else ""
+    }
+
 
     return {
         "INVOICE NO": find(r"Invoice\s*No\.?\s*[:\-]?\s*(\S+)"),
