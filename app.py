@@ -1,66 +1,151 @@
 import streamlit as st
 import pandas as pd
-import pdfplumber
-import io
-from datetime import datetime
-
-st.set_page_config(page_title="Invoice PDF Extractor", layout="wide")
-st.title("📄 Invoice PDF → Tabular Excel (Merged)")
-
+ 
+st.set_page_config(page_title="Smart Data Merger ULTIMATE", layout="wide")
+ 
+st.title("🚀 Smart Excel Group Merger ULTIMATE FINAL")
+ 
 uploaded_files = st.file_uploader(
-    "Upload or drag & drop invoice PDF files",
-    type="pdf",
+    "Upload Excel Files",
+    type=["xlsx", "xls"],
     accept_multiple_files=True
 )
-
-def extract_invoice_tables(uploaded_file):
-    all_rows = []
-
-    with pdfplumber.open(uploaded_file) as pdf:
-        for page in pdf.pages:
-            tables = page.extract_tables()
-
-            for table in tables:
-                # First row usually header
-                headers = table[0]
-                data_rows = table[1:]
-
-                for row in data_rows:
-                    if any(row):  # skip empty rows
-                        row_dict = dict(zip(headers, row))
-                        all_rows.append(row_dict)
-
-    return all_rows
-
+ 
+remove_duplicates = st.checkbox("Remove Duplicates (Based on Order ID)", value=False)
+ 
+# -------- HEADER DETECTION --------
+def detect_header(df):
+    for i in range(min(10, len(df))):
+        if df.iloc[i].notna().sum() > 2:
+            return i
+    return 0
+ 
+# -------- CLEAN COLUMN NAMES --------
+def clean_columns(cols):
+    return [str(c).strip().lower().replace(" ", "").replace("_", "") for c in cols]
+ 
+# -------- STANDARD COLUMN MAPPING --------
+def standardize_columns(cols):
+    mapping = {}
+    for col in cols:
+        if "order" in col and "id" in col:
+            mapping[col] = "order_id"
+        elif "awb" in col:
+            mapping[col] = "awb"
+        elif "date" in col:
+            mapping[col] = "date"
+        elif "client" in col or "merchant" in col:
+            mapping[col] = "client"
+        else:
+            mapping[col] = col
+    return mapping
+ 
+# -------- MONTH MAP --------
+month_map = {
+    "01": "Jan", "02": "Feb", "03": "Mar", "04": "Apr",
+    "05": "May", "06": "Jun", "07": "Jul", "08": "Aug",
+    "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dec"
+}
+ 
+# -------- EXTRACT GROUP + MONTH --------
+def extract_info(sheet_name):
+    parts = sheet_name.split("-")
+    if len(parts) >= 2:
+        month = parts[0]
+        group = parts[1].lower()
+        month_name = month_map.get(month, month)
+        return group, month_name
+    return sheet_name.lower(), "Unknown"
+ 
+# -------- MAIN --------
 if uploaded_files:
-    combined_data = []
-
+ 
+    grouped_data = {}
+ 
     for file in uploaded_files:
-        try:
-            table_rows = extract_invoice_tables(file)
-
-            for row in table_rows:
-                row["Source_File_Name"] = file.name
-                row["Upload_Time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                combined_data.append(row)
-
-        except Exception as e:
-            st.error(f"Failed to process {file.name}: {e}")
-
-    if combined_data:
-        df = pd.DataFrame(combined_data)
-
-        st.subheader("📊 Merged Invoice Line Items")
-        st.dataframe(df, use_container_width=True)
-
-        buffer = io.BytesIO()
-        df.to_excel(buffer, index=False)
-
+        xls = pd.ExcelFile(file)
+ 
+        for sheet in xls.sheet_names:
+            try:
+                raw_df = xls.parse(sheet, header=None)
+                header_row = detect_header(raw_df)
+ 
+                df = xls.parse(sheet, header=header_row)
+                df.columns = clean_columns(df.columns)
+ 
+                # standardize columns
+                mapping = standardize_columns(df.columns)
+                df.rename(columns=mapping, inplace=True)
+ 
+                # -------- CLEANING --------
+ 
+                # remove fully empty rows
+                df = df.dropna(how="all")
+ 
+                # ✅ REMOVE ROWS WHERE FIRST COLUMN (A) IS BLANK
+                first_col = df.columns[0]
+                df = df[df[first_col].notna() & (df[first_col].astype(str).str.strip() != "")]
+ 
+                # ✅ REMOVE CLIENT = Commission / Income
+                if "client" in df.columns:
+                    df = df[~df["client"].astype(str).str.lower().str.contains("commission|income", na=False)]
+ 
+                # -------- GROUP + MONTH --------
+                group, month = extract_info(sheet)
+                df["month"] = month
+ 
+                if group not in grouped_data:
+                    grouped_data[group] = []
+ 
+                grouped_data[group].append(df)
+ 
+            except Exception as e:
+                st.warning(f"⚠️ Error in {file.name} - {sheet}")
+ 
+    st.success("✅ Files Processed Successfully")
+ 
+    # -------- PROCESS EACH GROUP --------
+    for group, df_list in grouped_data.items():
+ 
+        # ✅ COLUMN ORDER FIX (BASED ON FIRST FILE)
+        base_cols = list(df_list[0].columns)
+        all_cols = base_cols.copy()
+ 
+        for df in df_list:
+            for col in df.columns:
+                if col not in all_cols:
+                    all_cols.append(col)
+ 
+        final_list = []
+        for df in df_list:
+            for col in all_cols:
+                if col not in df.columns:
+                    df[col] = None
+            df = df[all_cols]
+            final_list.append(df)
+ 
+        final_df = pd.concat(final_list, ignore_index=True)
+ 
+        # -------- DUPLICATE REMOVAL --------
+        if remove_duplicates and "order_id" in final_df.columns:
+            final_df = final_df.drop_duplicates(subset=["order_id"])
+ 
+        # -------- UI --------
+        st.markdown(f"## 📁 {group.upper()}")
+ 
+        col1, col2 = st.columns(2)
+        col1.metric("Total Rows", len(final_df))
+        col2.metric("Columns", len(final_df.columns))
+ 
+        st.dataframe(final_df.head(100), use_container_width=True)
+ 
+        # -------- DOWNLOAD --------
+        csv = final_df.to_csv(index=False).encode("utf-8")
+ 
         st.download_button(
-            label="📥 Download Excel (Merged)",
-            data=buffer.getvalue(),
-            file_name="merged_invoice_data.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            f"⬇️ Download {group.upper()}",
+            csv,
+            f"{group}_merged.csv",
+            "text/csv"
         )
-    else:
-        st.warning("No tabular data found in uploaded PDFs.")
+ 
